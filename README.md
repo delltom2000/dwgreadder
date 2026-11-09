@@ -64,3 +64,9 @@ npm run preview
 DWG 解析使用 [MLightCAD LibreDWG-Web](https://github.com/mlightcad/libredwg-web) 0.8.7（GPL-3.0），其底层为 [GNU LibreDWG](https://www.gnu.org/software/libredwg/)。本项目按 GPL-3.0-or-later 标记。Vite 使用 MIT 许可证，TypeScript 使用 Apache-2.0 许可证。重新分发时应保留对应许可证和源代码要求。
 
 三维渲染使用 [Three.js](https://threejs.org/) 的 Rhino3dmLoader 与 OrbitControls，3DM 解析使用 [rhino3dm](https://github.com/mcneel/rhino3dm)，均为 MIT 许可证。解析用的 JS / WASM 由本机依赖构建并提供，不使用外部 CDN。
+
+## HF 部署
+
+`Dockerfile` 使用 Node 构建前端，运行阶段仅提供 `dist` 的静态文件，监听 7860 端口，不提供模型上传接口。`.dockerignore` 只允许构建所需源码进入构建上下文。Space 元数据模板为 `deploy/SPACE_README.md`，上传时映射为目标 Space 的根 `README.md`，项目说明映射为 `PROJECT_README.md`。
+
+发布只从核对后的 Git 文件清单选取源码，不能上传整个工作目录。部署凭据与实际文件路径只在本机忽略目录或用户指定的本机位置使用，不能写入镜像、Space Secrets 或仓库。HF 上的浏览器历史与本机开发地址各自独立。

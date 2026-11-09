@@ -19,3 +19,5 @@ dist/
 *.dpapi
 *.pem
 *.key
+__pycache__/
+*.pyc

@@ -3,8 +3,8 @@ import path from 'node:path';
 const root=process.cwd();
 const git=(...args)=>execFileSync('git',['-c',`safe.directory=${root.replaceAll('\\','/')}`,...args],{encoding:'utf8',maxBuffer:8*1024*1024});
 const files=git('ls-files','--cached','-z').split('\0').filter(Boolean);
-const allowed=new Set(['.ts','.css','.html','.json','.js','.mjs','.cjs','.ps1','.cmd','.md','.txt']);
-const special=new Set(['.gitignore','.gitattributes','LICENSE','NOTICE']);
+const allowed=new Set(['.ts','.css','.html','.json','.js','.mjs','.cjs','.ps1','.cmd','.md','.txt','.py']);
+const special=new Set(['.gitignore','.gitattributes','.dockerignore','Dockerfile','LICENSE','NOTICE']);
 const issues=[];
 for(const file of files){
  if(/(^|\/)(\.local|node_modules|dist|credentials|screenshots|previews|\.aws|\.git)(\/|$)/i.test(file)||(!allowed.has(path.extname(file).toLowerCase())&&!special.has(file))){issues.push(`${file}: non-source or private asset`);continue;}
