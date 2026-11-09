@@ -16,7 +16,7 @@ export class Viewer {
   canvas.addEventListener('keydown',e=>{if(e.key==='Home'||e.key.toLowerCase()==='f'){e.preventDefault();this.fit();}if(e.key==='Escape'){this.selected.clear();this.selection=null;this.draw();}if(e.key==='+'||e.key==='=')this.zoom(1.3);if(e.key==='-')this.zoom(1/1.3);});
  }
  load(scene:Scene){this.scene=scene;this.hidden.clear();this.selected.clear();this.selection=null;this.fit();}
- fit(bounds=this.scene?.bounds){if(!bounds||!valid(bounds))return;this.cx=(bounds.minX+bounds.maxX)/2;this.cy=(bounds.minY+bounds.maxY)/2;this.scale=Math.min(this.w/Math.max(bounds.maxX-bounds.minX,1),this.h/Math.max(bounds.maxY-bounds.minY,1))*.82;this.draw();}
+ fit(bounds=this.scene?.bounds){if(!bounds||!valid(bounds))return;this.w=this.canvas.clientWidth;this.h=this.canvas.clientHeight;if(!this.w||!this.h)return;this.cx=(bounds.minX+bounds.maxX)/2;this.cy=(bounds.minY+bounds.maxY)/2;this.scale=Math.min(this.w/Math.max(bounds.maxX-bounds.minX,1),this.h/Math.max(bounds.maxY-bounds.minY,1))*.82;this.draw();}
  focus(bounds:Bounds,ids:number[]){this.selected=new Set(ids);this.selection=bounds;ids.forEach(i=>this.hidden.delete(this.scene!.primitives[i].layer));const global=this.scene?.bounds;
   const minSpan=global?Math.max(global.maxX-global.minX,global.maxY-global.minY)*.015:10;
   const width=Math.max((bounds.maxX-bounds.minX)*2.2,minSpan),height=Math.max((bounds.maxY-bounds.minY)*2.2,minSpan);

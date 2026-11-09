@@ -12,6 +12,8 @@ dist/
 *.[dD][wW][lL]*
 *.[bB][aA][kK]
 *.sv$
+*.[3][dD][mM]
+*.[3][dD][mM][bB][aA][kK]
 .env
 .env.*
 *.dpapi
