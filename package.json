@@ -1,13 +1,13 @@
 {
   "name": "dwgreader",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "type": "module",
   "private": true,
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "test": "tsx --test tests/geometry.test.ts",
+    "test": "tsx --test tests/geometry.test.ts tests/model-tree.test.ts",
     "check:upload": "node scripts/check-upload.mjs"
   },
   "keywords": [],

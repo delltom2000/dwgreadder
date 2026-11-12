@@ -61,15 +61,16 @@ export function buildScene(db:any,space='*Model_Space',unknown=0):Scene{
    }else{const key=block?'循环图块':'缺失图块';unsupported[key]=(unsupported[key]||0)+1;}
   }else if(['TEXT','MTEXT','ATTRIB'].includes(e.type)){
    const t=e.type==='ATTRIB'?{...e,...e.text}:e,text=cleanText(t.text),h=t.textHeight||1,pos=t.insertionPoint??t.startPoint??{x:0,y:0},a=e.type==='MTEXT'&&t.direction?Math.atan2(t.direction.y,t.direction.x):(t.rotation||0),sx=t.xScale||1;
-   const tm:Matrix=multiply(m,[Math.cos(a)*sx,Math.sin(a)*sx,-Math.sin(a),Math.cos(a),pos.x,pos.y]);
    const lines=text.split('\n'),w=Math.max(...lines.map(s=>Array.from(s).reduce((n,c)=>n+(/[\u2e80-\uffff]/.test(c)?1:0.62),0)))*h;
-   let x=t.halign===1?-w/2:t.halign===2?-w:0,y=0;
+   const fit=(t.halign===3||t.halign===5)&&t.startPoint&&t.endPoint&&w>0,dx=fit?t.endPoint.x-t.startPoint.x:0,dy=fit?t.endPoint.y-t.startPoint.y:0,distance=Math.hypot(dx,dy),angle=fit&&distance?Math.atan2(dy,dx):a,scaleX=fit&&distance?distance/w:sx,scaleY=fit&&distance&&t.halign===3?scaleX:1;
+   const tm:Matrix=multiply(m,[Math.cos(angle)*scaleX,Math.sin(angle)*scaleX,-Math.sin(angle)*scaleY,Math.cos(angle)*scaleY,pos.x,pos.y]);
+   let x=t.halign===1||t.halign===4?-w/2:t.halign===2?-w:0,y=t.halign===4?-h/2:0;
    if(e.type==='MTEXT'){const at=t.attachmentPoint||1;x=(at-1)%3===1?-w/2:(at-1)%3===2?-w:0;y=at<=3?-h:at<=6?lines.length*h*.65:lines.length*h*1.3;}
    else if(t.valign)y=t.valign===2?-h/2:t.valign===3?-h:0;
-   if(t.halign&&t.endPoint&&(t.endPoint.x||t.endPoint.y)){const p=transform(t.endPoint,m);tm[4]=p.x;tm[5]=p.y;}
+   if(!fit&&(t.halign||t.valign)&&t.endPoint&&(t.endPoint.x||t.endPoint.y)){const p=transform(t.endPoint,m);tm[4]=p.x;tm[5]=p.y;}
    const textMatrix=multiply(tm,[1,0,0,1,x,y]);
    const corners=[{x:0,y:h},{x:w,y:h},{x:w,y:-h*1.3*(lines.length-1)},{x:0,y:-h*1.3*(lines.length-1)}].map(p=>transform(p,textMatrix));
-   parent=identity;add(corners,false,false,text,h,textMatrix);item.label=text.replace(/\n/g,' ');
+   parent=identity;add(corners,false,false,text,h,textMatrix);const primitive=primitives[item.primitives[0]];if(primitive){primitive.textAlign=x===0?'left':x===-w/2?'center':'right';primitive.textOffsetX=x;if(fit&&distance)primitive.textFitWidth=w;}item.label=text.replace(/\n/g,' ');
   }else{
    let points:Point[]=[],closed=false,fill=false;
    switch(e.type){
@@ -98,7 +99,7 @@ export function buildScene(db:any,space='*Model_Space',unknown=0):Scene{
       }add(contour,true,!!e.solidFill);
      }
     }if(!e.solidFill)unsupported['图案填充仅显示边界']=(unsupported['图案填充仅显示边界']||0)+1;break;
-    case 'VIEWPORT':unsupported['布局视口投影']=(unsupported['布局视口投影']||0)+1;return null;
+    case 'VIEWPORT':return null;
     case 'SEQEND':return null;
     default:unsupported[e.type]=(unsupported[e.type]||0)+1;
    }
@@ -108,6 +109,27 @@ export function buildScene(db:any,space='*Model_Space',unknown=0):Scene{
  }
  const model=blocks.get(space),roots=model?.entities??db.entities.filter((e:any)=>!e.isInPaperSpace);
  for(const e of roots){if(e.type==='ATTRIB')continue;const n=visit(e,identity);if(n)items.push(n);}
+ // Paper-space viewports are windows into model space, not independent geometry.
+ const viewports=roots.filter((e:any)=>e.type==='VIEWPORT'&&e.viewportId>1&&e.status>0&&!(e.statusBitFlags&131072));
+ if(viewports.length){
+  const modelName=[...blocks.keys()].find(n=>/^\*model_space$/i.test(n));
+  const source=modelName?buildScene(db,modelName,unknown):null;
+  if(source)for(const vp of viewports){
+   if(!vp.width||!vp.height||!vp.viewHeight||!vp.displayCenter||!vp.viewportCenter)continue;
+   if((vp.statusBitFlags&65537)||Math.abs(vp.viewDirection?.x||0)>1e-7||Math.abs(vp.viewDirection?.y||0)>1e-7||(vp.viewDirection?.z??1)<0){unsupported['不支持的视口投影']=(unsupported['不支持的视口投影']||0)+1;continue;}
+   const s=vp.height/vp.viewHeight,a=-(vp.viewTwistAngle||0),cs=Math.cos(a)*s,sn=Math.sin(a)*s,center=vp.displayCenter,target=vp.targetPoint??{x:0,y:0};
+   const matrix:Matrix=[cs,sn,-sn,cs,vp.viewportCenter.x-cs*(center.x+target.x)+sn*(center.y+target.y),vp.viewportCenter.y-sn*(center.x+target.x)-cs*(center.y+target.y)];
+   const clip:Bounds={minX:vp.viewportCenter.x-vp.width/2,maxX:vp.viewportCenter.x+vp.width/2,minY:vp.viewportCenter.y-vp.height/2,maxY:vp.viewportCenter.y+vp.height/2};
+   const frozen=new Set(vp.frozenLayerIds??[]),id=`n${++seq}`,group:Item={id,label:`视口 ${vp.viewportId}`,type:'VIEWPORT',layer:vp.layer||'0',bounds:emptyBounds(),children:[],primitives:[]};
+   for(const p of source.primitives){
+    if(frozen.has(layerMap.get(p.layer)?.handle))continue;
+    const corners=[{x:p.bounds.minX,y:p.bounds.minY},{x:p.bounds.maxX,y:p.bounds.minY},{x:p.bounds.maxX,y:p.bounds.maxY},{x:p.bounds.minX,y:p.bounds.maxY}].map(v=>transform(v,matrix)),b=emptyBounds();for(const v of corners)union(b,{minX:v.x,minY:v.y,maxX:v.x,maxY:v.y});
+    b.minX=Math.max(b.minX,clip.minX);b.minY=Math.max(b.minY,clip.minY);b.maxX=Math.min(b.maxX,clip.maxX);b.maxY=Math.min(b.maxY,clip.maxY);if(b.minX>b.maxX||b.minY>b.maxY)continue;
+    group.primitives.push(primitives.length);primitives.push({...p,points:p.points.map(v=>transform(v,matrix)),matrix:p.matrix?multiply(matrix,p.matrix):undefined,bounds:b,clip,node:id});union(group.bounds,b);
+   }
+   if(valid(group.bounds))items.push(group);
+  }
+ }
  const bounds=emptyBounds();items.forEach(n=>union(bounds,n.bounds));const used=new Set(primitives.map(p=>p.layer));
- return{primitives,items,bounds,space,spaces:[...blocks.keys()].filter(n=>/^\*.*space/i.test(n)),layers:[...layerMap.values()].filter(l=>used.has(l.name)).map(l=>({name:l.name,color:aci(l.colorIndex),off:!!(l.off||l.frozen)})),unsupported,unknown};
+ return{primitives,items,bounds,space,spaces:[...blocks.values()].filter(b=>/^\*.*space/i.test(b.name)&&((b.entities?.length??0)>0||b.name===space||/^\*model_space$/i.test(b.name))).map(b=>b.name),layers:[...layerMap.values()].filter(l=>used.has(l.name)).map(l=>({name:l.name,color:aci(l.colorIndex),off:!!(l.off||l.frozen)})),unsupported,unknown};
 }

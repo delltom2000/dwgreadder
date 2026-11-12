@@ -29,6 +29,7 @@ $('file-history-host').append($('history-list'));
 document.querySelector('.header-actions')!.insertAdjacentHTML('afterbegin','<button id="toggle-files" class="panel-toggle" aria-label="展开或收起文件面板" title="展开或收起文件面板" aria-expanded="true">☰</button>');
 document.querySelector('.header-actions')!.insertAdjacentHTML('beforeend','<button id="toggle-properties" class="panel-toggle" aria-label="展开或收起属性面板" title="展开或收起属性面板" aria-expanded="true">◧</button>');
 $('canvas').insertAdjacentHTML('afterend','<div id="model-host" hidden></div>');
+$('spaces').insertAdjacentHTML('afterend','<div id="space-buttons" class="space-buttons" role="group" aria-label="切换图纸空间" hidden></div>');
 $('file').setAttribute('accept','.dwg,.3dm');document.querySelector('.brand-sub')!.textContent='DWG / 3DM';
 $('file-name').textContent='图纸与模型阅读器';$('stats').textContent='DWG 二维 / 3DM 三维';
 document.querySelector('h1')!.textContent='从图纸，到空间。';
@@ -39,6 +40,7 @@ document.querySelector('.history-note')!.textContent='历史副本保存在当�
 let mode:'dwg'|'3dm'='dwg',model:ModelViewer|null=null,modelController:AbortController|null=null,activeFile:File|null=null;
 const viewer=new Viewer($<HTMLCanvasElement>('canvas'));
 let scene:Scene|null=null,worker:Worker|null=null,tab='layers',busy=false,fileName='',timer:ReturnType<typeof setTimeout>|null=null,requestId=0;
+const drawingCache=new Map<string,{worker:Worker;scenes:Map<string,Scene>}>();let drawingKey='';
 const nodes=new Map<string,Item>();let allNodes:Item[]=[];
 let pendingHistoryFile:File|null=null;
 viewer.onChange=()=>{if(mode==='dwg')$('zoom-label').textContent=scene?`1 px ≈ ${(1/viewer.scale).toLocaleString('zh-CN',{maximumFractionDigits:2})} 图纸单位`: '—';};
@@ -53,36 +55,43 @@ function showProperties(rows:[string,string][]){const root=$('properties');root.
 const number=(n:number)=>n.toLocaleString('zh-CN',{maximumFractionDigits:2});
 function fileProperties(){if(activeFile)showProperties([['文件',activeFile.name],['格式',mode==='3dm'?'Rhino 3DM · 三维':'AutoCAD DWG · 二维'],['大小',`${(activeFile.size/1024/1024).toFixed(2)} MB`],['操作',mode==='3dm'?'旋转 / 平移 / 部件聚焦':'平移 / 缩放 / 对象定位']]);}
 function toast(message:string){$('toast').textContent=message;$('toast').hidden=false;setTimeout(()=>$('toast').hidden=true,7000);}
-function loading(value:boolean){busy=value;$('loading').hidden=!value;$<HTMLButtonElement>('open').disabled=value;$<HTMLButtonElement>('recent').disabled=value;$<HTMLSelectElement>('spaces').disabled=value;}
-function failure(message:string){pendingHistoryFile=null;loading(false);if(timer)clearTimeout(timer);toast(message);$('status').textContent=activeFile?'读取失败 · 保留当前文件':'读取失败';$('status-dot').classList.add('warn');}
-function makeWorker(){worker?.terminate();worker=new Worker(new URL('./parser.worker.ts',import.meta.url),{type:'module'});worker.onmessage=e=>{
+let previewState:{mode:'dwg'|'3dm';welcomeHidden:boolean}|null=null;
+function restorePreview(){if(!previewState)return;const previous=previewState;previewState=null;setMode(previous.mode);$('welcome').hidden=previous.welcomeHidden;renderTree();fileProperties();}
+function loading(value:boolean){busy=value;$('loading').hidden=!value;$<HTMLButtonElement>('open').disabled=value;$<HTMLButtonElement>('recent').disabled=value;$<HTMLSelectElement>('spaces').disabled=value;document.querySelectorAll<HTMLButtonElement>('#space-buttons button').forEach(button=>button.disabled=value);}
+function failure(message:string){restorePreview();pendingHistoryFile=null;loading(false);if(timer)clearTimeout(timer);toast(message);$('status').textContent=activeFile?'读取失败 · 保留当前文件':'读取失败';$('status-dot').classList.add('warn');}
+function discardWorker(){if(worker){worker.terminate();for(const [key,entry] of drawingCache)if(entry.worker===worker)drawingCache.delete(key);worker=null;}}
+function makeWorker(key:string){worker=new Worker(new URL('./parser.worker.ts',import.meta.url),{type:'module'});const owned=worker,entry={worker:owned,scenes:new Map<string,Scene>()};drawingCache.set(key,entry);while(drawingCache.size>3){const oldest=drawingCache.keys().next().value!;drawingCache.get(oldest)!.worker.terminate();drawingCache.delete(oldest);}worker.onmessage=e=>{
+ if(worker!==owned)return;
  if(e.data.progress)$('progress').textContent=e.data.progress;
  if(e.data.error)failure(e.data.error);
- if(e.data.scene){if(timer)clearTimeout(timer);scene=e.data.scene;loading(false);nodes.clear();allNodes=[];
+ if(e.data.scene){if(timer)clearTimeout(timer);scene=e.data.scene;entry.scenes.set(scene!.space,scene!);loading(false);nodes.clear();allNodes=[];
   const walk=(items:Item[])=>items.forEach(n=>{nodes.set(n.id,n);allNodes.push(n);walk(n.children);});walk(scene!.items);
   setMode('dwg');model?.clear();viewer.load(scene!);$('welcome').hidden=true;$('file-name').textContent=fileName;$('file-name').title=fileName;
   if(pendingHistoryFile){const savedFile=pendingHistoryFile;activeFile=savedFile;pendingHistoryFile=null;void rememberDrawing(savedFile).then(renderHistory).catch(()=>toast('文件已打开，但浏览器未能保存历史副本。'));}fileProperties();
   $('drawing-state').textContent='只读预览';$('space-label').textContent=scene!.space.toLowerCase().includes('model')?'模型空间':'布局空间';$('item-count').textContent=allNodes.length.toLocaleString();
-  const spaces=$<HTMLSelectElement>('spaces');spaces.replaceChildren(...scene!.spaces.map(s=>{const o=document.createElement('option');o.value=s;o.textContent=s.toLowerCase().includes('model')?'模型空间':`布局空间 · ${s}`;return o;}));spaces.value=scene!.space;spaces.hidden=scene!.spaces.length<2;
+  const spaces=$<HTMLSelectElement>('spaces');spaces.replaceChildren(...scene!.spaces.map(s=>{const o=document.createElement('option');o.value=s;o.textContent=s.toLowerCase().includes('model')?'模型空间':`布局空间 · ${s}`;return o;}));spaces.value=scene!.space;spaces.hidden=true;
+  const buttons=$('space-buttons');buttons.replaceChildren(...scene!.spaces.map((s,i)=>{const b=document.createElement('button');b.textContent=/model/i.test(s)?'模型空间':scene!.spaces.filter(n=>!/model/i.test(n)).length>1?`布局 ${i+1}`:'布局空间';b.setAttribute('aria-pressed',String(s===scene!.space));b.onclick=()=>{spaces.value=s;spaces.dispatchEvent(new Event('change'));};return b;}));buttons.hidden=scene!.spaces.length<2;
   const unsupported=Object.entries(scene!.unsupported),missing=unsupported.reduce((n,[,v])=>n+v,0)+scene!.unknown;
   $('status').textContent=missing?`已读取 · ${missing} 项兼容提示`:(scene!.warnings?.length?'已读取 · 有兼容提示':'已读取');$('status').title=unsupported.map(([t,n])=>`${t}：${n}`).join('；')+(scene!.unknown?`；解析器未知对象：${scene!.unknown}`:'')+(scene!.warnings?.length?`；DWG 解析告警：${scene!.warnings.join(', ')}，部分自定义对象可能不完整`:'');$('status-dot').classList.toggle('warn',!!missing||!!scene!.warnings?.length);
   $('stats').textContent=`${scene!.items.length.toLocaleString()} 个顶层对象 · ${scene!.layers.length} 个可见图层 · ${scene!.primitives.length.toLocaleString()} 个图元`;
   $('selection').hidden=true;renderTree();if(!valid(scene!.bounds))toast('当前空间没有可显示的图形，请切换空间。');
  }
 };worker.onerror=e=>failure(`解析失败：${e.message||'解析器异常，请重新打开文件'}`);return worker;}
-function timeout(){if(timer)clearTimeout(timer);timer=setTimeout(()=>{requestId++;worker?.terminate();worker=null;modelController?.abort();failure('读取超过 120 秒，已停止。请尝试较小文件，或在原软件中保存显示网格后重试。');},120000);}
+function timeout(){if(timer)clearTimeout(timer);timer=setTimeout(()=>{requestId++;discardWorker();modelController?.abort();failure('读取超过 120 秒，已停止。请尝试较小文件，或在原软件中保存显示网格后重试。');},120000);}
 async function openFile(file:File){if(busy)return;if(!/\.(dwg|3dm)$/i.test(file.name)){toast('请选择 DWG 图纸或 3DM 模型。');return;}if(file.size>100*1024*1024){toast('当前版本支持 100 MB 以内的文件。');return;}
- const current=++requestId;loading(true);$('progress').textContent='正在读取文件…';timeout();try{
+ const current=++requestId;$('loading').classList.toggle('model-loading',/\.3dm$/i.test(file.name));loading(true);$('progress').textContent='正在读取文件…';timeout();try{
   const buffer=await file.arrayBuffer();if(current!==requestId)return;const isModel=/\.3dm$/i.test(file.name),header=new TextDecoder().decode(buffer.slice(0,32));
   if(isModel?!header.startsWith('3D Geometry File Format'):!header.startsWith('AC10'))throw new Error('文件头与格式不匹配，请确认文件未损坏。');
+  const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',buffer)),b=>b.toString(16).padStart(2,'0')).join('');if(current!==requestId)return;
   fileName=file.name;pendingHistoryFile=file;
-  if(!isModel){makeWorker().postMessage({buffer,wasmUrl:new URL('./',location.href).href},[buffer]);return;}
+  if(!isModel){drawingKey=hash;const cached=drawingCache.get(hash);if(cached){drawingCache.delete(hash);drawingCache.set(hash,cached);worker=cached.worker;const existing=cached.scenes.get('*Model_Space')??cached.scenes.values().next().value;if(existing){worker.onmessage!(new MessageEvent('message',{data:{scene:existing}}));$('status').textContent+=' · 本机缓存';}else worker.postMessage({});}else makeWorker(hash).postMessage({buffer,wasmUrl:new URL('./',location.href).href},[buffer]);return;}
   $('progress').textContent='正在解析 3DM 几何与部件…';modelController=new AbortController();const signal=modelController.signal;
   if(!model){const module=await import('./model-viewer');if(current!==requestId)return;model=new module.ModelViewer($('model-host'));model.onSelect=part=>selectedModel(part,false);model.onChange=()=>{if(mode==='3dm')$('zoom-label').textContent='3DM · 透视视图';};}
-  await model.load(buffer,signal);if(current!==requestId)return;if(timer)clearTimeout(timer);worker?.terminate();worker=null;scene=null;allNodes=[];nodes.clear();setMode('3dm');
-  activeFile=file;pendingHistoryFile=null;void rememberDrawing(file).then(renderHistory).catch(()=>toast('模型已打开，但未能保存历史副本。'));
-  $('welcome').hidden=true;$('file-name').textContent=file.name;$('file-name').title=file.name;fileProperties();$('spaces').hidden=true;$('space-label').textContent='3DM · 三维模型';$('drawing-state').textContent='只读预览';$('item-count').textContent=model.parts.length.toLocaleString();
-  $('stats').textContent=`${model.parts.length.toLocaleString()} 个对象 · ${model.layers.length} 个图层`;$('status').textContent=model.warnings.length?`已读取 · ${model.warnings.length} 项兼容提示`:'已读取';$('status').title=model.warnings.length?'部分对象没有显示网格或暂不支持，可能未完整显示。请在 Rhino 中保存显示网格后重试。':'';$('status-dot').classList.toggle('warn',!!model.warnings.length);loading(false);renderTree();
+  model.onPreview=()=>{if(current!==requestId)return;previewState={mode,welcomeHidden:!!$('welcome').hidden};setMode('3dm');$('welcome').hidden=true;$('progress').textContent='概貌已显示 · 正在后台补齐…';$('status').textContent='概貌已显示 · 后台解析完整模型与目录…';$('space-label').textContent='3DM · 概貌预览';$('tree').replaceChildren();const note=document.createElement('div');note.className='tree-empty';note.textContent='概貌已显示，可旋转、缩放。正在后台解析图层与部件…';$('tree').append(note);};
+  const fromCache=await model.load(buffer,signal,hash);if(current!==requestId)return;if(timer)clearTimeout(timer);worker=null;scene=null;allNodes=[];nodes.clear();setMode('3dm');
+  previewState=null;activeFile=file;pendingHistoryFile=null;void rememberDrawing(file).then(renderHistory).catch(()=>toast('模型已打开，但未能保存历史副本。'));
+  $('welcome').hidden=true;$('file-name').textContent=file.name;$('file-name').title=file.name;fileProperties();$('spaces').hidden=true;$('space-buttons').hidden=true;$('space-label').textContent='3DM · 三维模型';$('drawing-state').textContent='只读预览';$('item-count').textContent=model.parts.length.toLocaleString();
+  $('stats').textContent=`${model.parts.length.toLocaleString()} 个对象 · ${model.layers.length} 个图层`;$('status').textContent=(model.warnings.length?`已读取 · ${model.warnings.length} 项兼容提示`:'已读取')+(fromCache?' · 本机缓存':'');$('status').title=model.warnings.length?'部分对象没有显示网格或暂不支持，可能未完整显示。请在 Rhino 中保存显示网格后重试。':'';$('status-dot').classList.toggle('warn',!!model.warnings.length);loading(false);renderTree();
  }catch(e){if(current===requestId)failure(e instanceof Error?e.message:String(e));}
 }
 function indexes(item:Item):number[]{return[...item.primitives,...item.children.flatMap(indexes)];}
@@ -115,13 +124,13 @@ function renderTree(){
 }
 $('open').onclick=$('choose').onclick=()=>$<HTMLInputElement>('file').click();
 $<HTMLInputElement>('file').onchange=e=>{const input=e.target as HTMLInputElement;if(input.files?.[0])void openFile(input.files[0]);input.value='';};
-$('cancel').onclick=()=>{requestId++;pendingHistoryFile=null;modelController?.abort();worker?.terminate();worker=null;if(timer)clearTimeout(timer);loading(false);$('status').textContent=activeFile?'已取消 · 保留当前文件':'已取消';};
+$('cancel').onclick=()=>{requestId++;pendingHistoryFile=null;modelController?.abort();restorePreview();discardWorker();if(timer)clearTimeout(timer);loading(false);$('status').textContent=activeFile?'已取消 · 保留当前文件':'已取消';};
 $('zoom-in').onclick=()=>mode==='3dm'?model?.zoom(1.4):viewer.zoom(1.4);$('zoom-out').onclick=()=>mode==='3dm'?model?.zoom(1/1.4):viewer.zoom(1/1.4);$('fit').onclick=()=>{if(mode==='3dm'){model?.fit();$('selection').hidden=true;fileProperties();}else viewer.fit();};
 $('clear-selection').onclick=()=>{if(mode==='3dm')model?.clearSelection();else{viewer.selected.clear();viewer.selection=null;viewer.draw();}$('selection').hidden=true;fileProperties();};
 $('status').onclick=()=>{if($('status').title)toast($('status').title);};
 $<HTMLInputElement>('search').oninput=()=>renderTree();
 document.querySelectorAll<HTMLButtonElement>('[data-tab]').forEach(b=>b.onclick=()=>{tab=b.dataset.tab!;document.querySelectorAll('[data-tab]').forEach(t=>t.setAttribute('aria-selected',String(t===b)));renderTree();});
-$<HTMLSelectElement>('spaces').onchange=e=>{if(!worker||busy)return;loading(true);worker.postMessage({space:(e.target as HTMLSelectElement).value});timeout();};
+$<HTMLSelectElement>('spaces').onchange=e=>{if(!worker||busy)return;loading(true);const space=(e.target as HTMLSelectElement).value,cached=drawingCache.get(drawingKey)?.scenes.get(space);if(cached){worker.onmessage!(new MessageEvent('message',{data:{scene:cached}}));$('status').textContent+=' · 本机缓存';}else{worker.postMessage({space});timeout();}};
 document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='o'){e.preventDefault();if(!busy)$<HTMLInputElement>('file').click();}if(e.key==='/'&&!(e.target instanceof HTMLInputElement)){e.preventDefault();$('search').focus();}});
 let dragDepth=0;window.addEventListener('dragenter',e=>{e.preventDefault();dragDepth++;if(!busy)$('drop-mask').classList.add('visible');});window.addEventListener('dragover',e=>e.preventDefault());window.addEventListener('dragleave',()=>{dragDepth=Math.max(0,dragDepth-1);if(!dragDepth)$('drop-mask').classList.remove('visible');});window.addEventListener('drop',e=>{e.preventDefault();dragDepth=0;$('drop-mask').classList.remove('visible');if(e.dataTransfer?.files[0])void openFile(e.dataTransfer.files[0]);});
 fetch('/api/sample-info').then(r=>r.ok?r.json():null).then(info=>{if(!info)return;$('sample').hidden=false;$('sample').onclick=async()=>{try{const r=await fetch('/api/sample');if(!r.ok)throw new Error('读取示例失败');await openFile(new File([await r.arrayBuffer()],info.name,{lastModified:0}));}catch(e){toast(String(e));}};}).catch(()=>{});
@@ -149,13 +158,29 @@ function togglePanel(name:'files'|'properties',force?:boolean){const panel=$(`${
 for(const name of ['files','properties'] as const){$(`toggle-${name}`).onclick=()=>togglePanel(name);try{if(localStorage.getItem(`reader-panel-${name}`)==='false')togglePanel(name,false);}catch{}}
 void renderHistory();
 
-function selectedModel(part:ModelPart,move=true){if(move)model!.focus([part]);$('selection-text').textContent=part.label;$('selection').hidden=false;const size=part.bounds.getSize(part.object.position.clone());showProperties([['对象',part.label],['类型',part.kind],['图层',part.layer],['尺寸 X',number(size.x)],['尺寸 Y',number(size.y)],['尺寸 Z',number(size.z)],['坐标单位','模型原始单位']]);document.querySelectorAll('.row.active').forEach(e=>e.classList.remove('active'));document.querySelectorAll<HTMLElement>('[data-part]').forEach(e=>{if(e.dataset.part===part.id)e.classList.add('active');});}
+function selectedModel(part:ModelPart,move=true){if(move)model!.focus([part]);$('selection-text').textContent=part.label;$('selection').hidden=false;const size=part.bounds.getSize(part.object.position.clone());showProperties([['对象',part.label],['名称来源',part.named?'3DM 对象名称':'图层名＋类型＋序号'],['类型',part.kind],['图层',part.layer],['尺寸 X',number(size.x)],['尺寸 Y',number(size.y)],['尺寸 Z',number(size.z)],['坐标单位','模型原始单位']]);document.querySelectorAll('.row.active').forEach(e=>e.classList.remove('active'));document.querySelectorAll<HTMLElement>('[data-part]').forEach(e=>{if(e.dataset.part===part.id)e.classList.add('active');});}
 function renderModelTree(){
  const root=$('tree');root.replaceChildren();if(!model)return;const query=$<HTMLInputElement>('search').value.trim().toLowerCase();
  const make=(label:string,detail:string,click:()=>void,depth=0)=>{const row=document.createElement('div');row.className='row';row.style.paddingLeft=`${14+depth*14}px`;const button=document.createElement('button');button.className='row-label';button.title=label;button.innerHTML=`<span class="row-icon">${icon('file')}</span><span class="label"></span><span class="row-detail"></span>`;button.querySelector('.label')!.textContent=label;button.querySelector('.row-detail')!.textContent=detail;button.onclick=()=>{click();document.querySelectorAll('.row.active').forEach(e=>e.classList.remove('active'));row.classList.add('active');};row.append(button);return row;};
  const expandable=(row:HTMLElement,parent:HTMLElement,fill:(sub:HTMLElement)=>void)=>{const button=document.createElement('button');button.className='expand';button.innerHTML=icon('chevron');button.setAttribute('aria-label',`展开 ${row.textContent}`);button.setAttribute('aria-expanded','false');row.prepend(button);const sub=document.createElement('div');sub.hidden=true;parent.append(row,sub);button.onclick=()=>{sub.hidden=!sub.hidden;button.classList.toggle('expanded',!sub.hidden);button.setAttribute('aria-expanded',String(!sub.hidden));if(!sub.hidden&&!sub.children.length)fill(sub);};};
  const append=(parent:HTMLElement,parts:ModelPart[],depth=0)=>{let count=0;const more=document.createElement('button');more.className='more';const batch=()=>{more.remove();const end=Math.min(count+80,parts.length);for(;count<end;count++){const part=parts[count],row=make(part.label,part.kind,()=>selectedModel(part),depth);row.dataset.part=part.id;if(part.children.length)expandable(row,parent,sub=>append(sub,part.children,depth+1));else parent.append(row);}if(count<parts.length){more.textContent=`再显示 ${Math.min(80,parts.length-count)} 项`;more.onclick=batch;parent.append(more);}};batch();};
- if(tab==='layers')for(const layer of model.layers.filter(l=>l.toLowerCase().includes(query))){const parts=model.parts.filter(p=>p.layer===layer);const row=make(layer,String(parts.length),()=>{model!.focus(parts);$('selection-text').textContent=layer;$('selection').hidden=false;showProperties([['类型','模型图层'],['图层',layer],['对象数',String(parts.length)]]);});const eye=document.createElement('button');eye.className='eye';eye.innerHTML=icon('eye');eye.setAttribute('aria-label',`显示或隐藏 ${layer}`);eye.setAttribute('aria-pressed',String(model.layerVisible(layer)));eye.onclick=()=>{const visible=model!.toggleLayer(layer);eye.classList.toggle('muted',!visible);eye.setAttribute('aria-pressed',String(visible));};row.append(eye);expandable(row,root,sub=>append(sub,parts,1));}
- else append(root,query?model.parts.filter(p=>`${p.label} ${p.layer} ${p.kind}`.toLowerCase().includes(query)):model.roots);
+ const layerRows=(parent:HTMLElement,layers:import('./model-tree').LayerNode[],depth=0)=>{for(const layer of layers){
+  const parts=model!.partsForLayer(layer),matches=!query||layer.path.toLowerCase().includes(query),matchedParts=parts.filter(p=>`${p.label} ${p.layer} ${p.kind}`.toLowerCase().includes(query));
+  if(!matches&&!matchedParts.length&&!hasMatchingLayer(layer))continue;
+  const row=make(layer.label,String(parts.length),()=>{model!.focus(parts);$('selection-text').textContent=layer.path;$('selection').hidden=false;showProperties([['类型','模型图层'],['图层',layer.path],['对象数',String(parts.length)]]);},depth);row.dataset.layer=String(layer.index);row.title=layer.path;row.querySelector('.row-icon')!.innerHTML=icon('layers');
+  const eye=document.createElement('button');eye.className='eye';eye.innerHTML=icon('eye');eye.setAttribute('aria-label',`显示或隐藏 ${layer.path}`);
+  const updateEyes=()=>{root.querySelectorAll<HTMLButtonElement>('[data-layer] .eye').forEach(button=>{const id=Number(button.closest<HTMLElement>('[data-layer]')!.dataset.layer),node=findLayer(model!.layerTree,id)!;const items=model!.partsForLayer(node),shown=items.filter(p=>p.object.visible).length;button.classList.toggle('muted',!!items.length&&!shown);button.setAttribute('aria-pressed',shown>0&&shown<items.length?'mixed':String(!items.length||shown>0));});};
+  eye.setAttribute('aria-pressed',String(!parts.length||parts.some(p=>p.object.visible)));eye.classList.toggle('muted',!!parts.length&&!parts.some(p=>p.object.visible));eye.onclick=()=>{const visible=!parts.some(p=>p.object.visible);parts.forEach(p=>p.object.visible=visible);model!.clearSelection();updateEyes();model!.draw();};row.append(eye);
+  const direct=model!.roots.filter(p=>p.layerIndex===layer.index),showParts=query&&!matches?direct.filter(p=>`${p.label} ${p.kind}`.toLowerCase().includes(query)):direct;
+  if(layer.children.length||showParts.length)expandable(row,parent,sub=>{layerRows(sub,layer.children,depth+1);append(sub,showParts,depth+1);});else parent.append(row);
+ }};
+ const findLayer=(layers:import('./model-tree').LayerNode[],id:number):import('./model-tree').LayerNode|undefined=>{for(const layer of layers){if(layer.index===id)return layer;const child=findLayer(layer.children,id);if(child)return child;}};
+ const hasMatchingLayer=(layer:import('./model-tree').LayerNode):boolean=>layer.path.toLowerCase().includes(query)||layer.children.some(hasMatchingLayer);
+ layerRows(root,model.layerTree);
+ const unlayered=model.roots.filter(p=>!findLayer(model!.layerTree,p.layerIndex));if(unlayered.length)append(root,query?unlayered.filter(p=>p.label.toLowerCase().includes(query)):unlayered);
  if(!root.children.length){const empty=document.createElement('div');empty.className='tree-empty';empty.textContent='没有匹配的项目';root.append(empty);}
 }
+
+// Warm only the bundled local reader while the page is idle. No model data is read.
+const prepareModel=()=>{void import('./model-viewer').then(m=>m.prepareModelReader()).catch(()=>{});};
+if('requestIdleCallback' in window)window.requestIdleCallback(prepareModel,{timeout:2000});else setTimeout(prepareModel,500);

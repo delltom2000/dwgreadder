@@ -32,12 +32,13 @@ export class Viewer {
   const left=this.cx-this.w/2/this.scale,right=this.cx+this.w/2/this.scale,bottom=this.cy-this.h/2/this.scale,top=this.cy+this.h/2/this.scale;
   const paint=(p:Primitive,highlight=false)=>{
    if(this.hidden.has(p.layer)||p.bounds.maxX<left||p.bounds.minX>right||p.bounds.maxY<bottom||p.bounds.minY>top)return;
+   c.save();if(p.clip){c.beginPath();c.rect(p.clip.minX,p.clip.minY,p.clip.maxX-p.clip.minX,p.clip.maxY-p.clip.minY);c.clip();}
    c.globalAlpha=this.selected.size&&!highlight ? .65:1;
    const color=highlight?'#0069ab':drawingColor(p.color);c.strokeStyle=color;c.fillStyle=color;c.lineWidth=(highlight?2:1)/this.scale;
    if(p.text!==undefined&&p.matrix){
-    const m=p.matrix,h=p.height!;if(h*Math.hypot(m[2],m[3])*this.scale<2)return;c.save();c.transform(...m);c.scale(1,-1);c.font=`${h}px "Microsoft YaHei", "SimSun", sans-serif`;c.textBaseline='alphabetic';
-    p.text.split('\n').forEach((line,i)=>c.fillText(line,0,i*h*1.3));c.restore();
-   }else{c.beginPath();p.points.forEach((v,i)=>i?c.lineTo(v.x,v.y):c.moveTo(v.x,v.y));if(p.points.length===1){const p0=p.points[0];c.lineTo(p0.x+2/this.scale,p0.y);}if(p.closed)c.closePath();if(p.fill)c.fill('evenodd');else c.stroke();}
+    const m=p.matrix,h=p.height!;if(h*Math.hypot(m[2],m[3])*this.scale<2){c.restore();return;}c.save();c.transform(...m);c.translate(-(p.textOffsetX||0),0);c.scale(1,-1);c.font=`${h}px "Microsoft YaHei", "SimSun", sans-serif`;c.textBaseline='alphabetic';c.textAlign=p.textAlign??'left';
+    p.text.split('\n').forEach((line,i)=>{c.save();if(p.textFitWidth){const measured=c.measureText(line).width;if(measured)c.scale(p.textFitWidth/measured,1);}c.fillText(line,0,i*h*1.3);c.restore();});c.restore();
+   }else{c.beginPath();p.points.forEach((v,i)=>i?c.lineTo(v.x,v.y):c.moveTo(v.x,v.y));if(p.points.length===1){const p0=p.points[0];c.lineTo(p0.x+2/this.scale,p0.y);}if(p.closed)c.closePath();if(p.fill)c.fill('evenodd');else c.stroke();}c.restore();
   };
   this.scene.primitives.forEach(p=>paint(p));this.selected.forEach(i=>paint(this.scene!.primitives[i],true));c.restore();
   if(this.selection){const b=this.selection,x=(b.minX-this.cx)*this.scale+this.w/2,y=(this.cy-b.maxY)*this.scale+this.h/2,w=(b.maxX-b.minX)*this.scale,h=(b.maxY-b.minY)*this.scale;c.strokeStyle='#0069ab';c.lineWidth=1;c.setLineDash([5,5]);c.strokeRect(x-7,y-7,w+14,h+14);c.setLineDash([]);}

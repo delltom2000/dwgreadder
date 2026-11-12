@@ -9,10 +9,11 @@ try{
  page.on('pageerror',e=>errors.push(e.message));page.on('request',r=>{if(/^https?:/.test(r.url())&&!r.url().startsWith('http://127.0.0.1:'))external.push(r.url());});
  await page.goto(process.env.READER_URL||'http://127.0.0.1:5173/');
  await page.locator('#file').setInputFiles(modelConfig.path);
- await page.waitForFunction(()=>document.querySelector('#space-label').textContent.includes('3DM'),{},{timeout:120000});
+ await page.waitForFunction(()=>document.querySelector('#space-label').textContent.includes('3DM')&&document.querySelector('#status').textContent.includes('已读取'),{},{timeout:120000});
  await page.locator('#model-host canvas').waitFor();await page.waitForTimeout(700);
  console.log('Model loaded:',await page.locator('#stats').textContent(),await page.locator('#status').textContent());
  await page.screenshot({path:'.local/model.png'});
+ for(let i=0;i<40&&!await page.locator('[data-part]').count();i++){const expand=page.locator('#tree .expand[aria-expanded=false]').first();if(!await expand.count())break;await expand.click();}
  assert.ok(await page.locator('[data-part]').count()>0);await page.locator('[data-part] .row-label').first().click();await page.waitForTimeout(600);
  assert.ok((await page.locator('#properties').textContent()).includes('尺寸 Z'));await page.screenshot({path:'.local/model-focus.png'});
  await page.locator('#fit').click();await page.waitForTimeout(600);

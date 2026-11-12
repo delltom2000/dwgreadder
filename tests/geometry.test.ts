@@ -30,3 +30,19 @@ test('bulged polyline retains its arc rather than a straight chord',()=>{
 test('CAD formatting is cleaned while document text stays plain data',()=>{
  assert.equal(cleanText('{\\fSimSun;客厅\\P35.2%%d}'),'客厅\n35.2°');assert.equal(cleanText('<script>alert(1)</script>'),'<script>alert(1)</script>');
 });
+test('paper viewport projects model geometry and clips its bounds',()=>{
+ const vp={type:'VIEWPORT',viewportId:2,status:1,statusBitFlags:0,viewportCenter:{x:100,y:200},displayCenter:{x:5,y:0},viewDirection:{x:0,y:0,z:1},width:4,height:4,viewHeight:4};
+ const scene=buildScene(db([block('*Model_Space',[line]),block('*Paper_Space',[vp])]),'*Paper_Space');
+ assert.equal(scene.primitives.length,1);assert.deepEqual(scene.primitives[0].points,[{x:95,y:200},{x:105,y:200}]);assert.deepEqual(scene.primitives[0].bounds,{minX:98,minY:200,maxX:102,maxY:200});assert.deepEqual(scene.primitives[0].clip,{minX:98,minY:198,maxX:102,maxY:202});
+});
+test('vertical text justification uses the alignment point even with left horizontal alignment',()=>{
+ const text={type:'TEXT',handle:'t',layer:'0',text:'label',textHeight:2,halign:0,valign:3,startPoint:{x:10,y:20},endPoint:{x:10,y:22}};
+ const scene=buildScene(db([block('*Model_Space',[text])]));assert.equal(scene.primitives[0].matrix?.[5],20);
+});
+test('fit text spans its two specified alignment points',()=>{
+ const text={type:'TEXT',handle:'t',layer:'0',text:'11',textHeight:3,halign:5,valign:0,xScale:1.6,startPoint:{x:10,y:20},endPoint:{x:14,y:20}};
+ const p=buildScene(db([block('*Model_Space',[text])])).primitives[0];assert.equal(p.bounds.minX,10);assert.ok(Math.abs(p.bounds.maxX-14)<1e-9);assert.ok(p.textFitWidth);assert.equal(p.textAlign,'left');
+});
+test('empty paper block placeholders are omitted from space choices',()=>{
+ const scene=buildScene(db([block('*Model_Space',[line]),block('*Paper_Space',[line]),block('*Paper_Space0',[])]));assert.deepEqual(scene.spaces,['*Model_Space','*Paper_Space']);
+});
